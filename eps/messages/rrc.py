@@ -53,6 +53,7 @@ rrcConnectionSetupComplete = \
 )
 
 
+
 rrcUlInformationTransfer = lambda dedicatedInfoNas: (
     "uu",
     {
@@ -124,4 +125,38 @@ securityModeFailure = lambda rrcTransactionIdentifier: (
      "messageType": "securityModeFailure",
      "rrcTransactionIdentifier": rrcTransactionIdentifier,
     }
+)
+
+rrcConnectionReconfiguration = \
+    lambda rrcTransactionIdentifier, radioResourceConfigDedicated, dedicatedInfoNas: (
+        "uu",
+        {
+         "physicalChannel" : "pusch",
+         "transportChannel": "dl-sch",
+         "logicalChannel": "dcch",
+         "lcid":  "srb1"
+        },
+        {
+         "messageType": "rrcConnectionReconfiguration",
+         "rrcTransactionIdentifier" : rrcTransactionIdentifier,
+         "radioResourceConfigDedicated":  radioResourceConfigDedicated,
+         "dedicatedInfoNas": dedicatedInfoNas
+        }
+)
+    
+rrcConnectionReconfigurationComplete = \
+    lambda rrcTransactionIdentifier, radioResourceConfigDedicated, dedicatedInfoNas: (
+        "uu",
+        {
+         "physicalChannel" : "pusch",
+         "transportChannel": "ul-sch",
+         "logicalChannel": "dcch",
+         "lcid":  "srb1"
+        },
+        {
+         "messageType": "rrcConnectionReconfiguration",
+         "rrcTransactionIdentifier" : rrcTransactionIdentifier,
+         "radioResourceConfigDedicated":  radioResourceConfigDedicated,
+         "dedicatedInfoNas": dedicatedInfoNas
+        }
 )
