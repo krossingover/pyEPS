@@ -1,17 +1,116 @@
 import random
 from collections import Counter
 
-from eps.messages.rrc import rrcConnectionSetup, securityModeCommand
+from eps.messages.rrc import rrcConnectionSetup, securityModeCommand, rrcConnectionReconfiguration
 from eps.messages.mac import randomAccessResponse, contentionResolutionIdentity
 
 
+class RrcConnectionReconfigurationProcedure(object):
+    Success, ErrorNoRrcConnectionReconfigurationCompleteMessage = range(2)
+    
+    def __init__(self, maxRrcConnectionReconfigurationAttempts, rrcConnectionReconfigurationTimeout,
+                 ioService, procedureReconfigurationCompleteCallback):
+        self.maxRrcConnectionReconfigurationAttempts = maxRrcConnectionReconfigurationAttempts  # not defined in standards
+        self.rrcConnectionReconfigurationTimeout = rrcConnectionReconfigurationTimeout
+        self.procedureReconfigurationCompleteCallback = procedureReconfigurationCompleteCallback
+        self.ioService = ioService
+        self.attemptNo = 0
+        self.rrcConnectionReconfigurationTimer = None
+        self.procedureCompleteCallbackExecuted = False
+        
+    def __notifyProcedureCompletion__(self, result, address):
+        if result == self.Success:
+            self.procedureCompleteCallback(result, address, self.cRnti, self.rrcTransactionIdentifier, {
+                "ueIdentity": self.ueIdentity,
+                "rrcReconfigurationCause": self.rrcReconfigurationCause,
+                "selectedPlmnIdentity": self.selectedPlmnIdentity,
+                "dedicatedInfoNas": self.dedicatedInfoNas
+            })
+        else:
+            self.procedureCompleteCallback(result, address, self.cRnti, self.rrcTransactionIdentifier)
+            
+    def handleRrcConfigurationMessage(self, source, interface, channelInfo, message, args=None):
+        if message["messageType"] == "rrcConnectionReconfiguration":
+            self.rrcTransactionIdentifier = args["rrcTransactionIdentifier"]        
+            self.ueAddress = source
+            self.cRnti = channelInfo["cRnti"]
+            self.ueIdentity = message["ueIdentity"]
+            self.rrcReconfigurationCause = message["rrcReconfigurationCause"]
+            self.__sendRrcConnectionReconfiguration__()
+        if message["messageType"] == "rrcConnectionReconfigurationComplete":
+            assert message["rrcTransactionIdentifier"] == self.rrcTransactionIdentifier
+            self.selectedPlmnIdentity = message["selectedPlmnIdentity"]
+            self.dedicatedInfoNas = message["dedicatedInfoNas"]
+            if not self.procedureCompleteCallbackExecuted:
+                self.rrcConnectionReconfigurationTimer.cancel()
+                self.__notifyProcedureCompletion__(self.Success, source)
+                self.procedureCompleteCallbackExecuted = True
+                
+    def __sendRrcConnectionReconfiguration__(self):
+        self.attemptNo += 1
+        self.ioService.sendMessage(self.ueAddress,
+            *rrcConnectionReconfiguration(self.cRnti, self.rrcTransactionIdentifier))
+        self.rrcConnectionReconfigurationTimer = self.ioService.createTimer(
+            self.rrcConnectionReconfigurationTimeout, self.__onRrcConnectionReconfigurationTimeout__)
+        self.rrcConnectionReconfigurationTimer.start()
+        
+    def __onRrcConnectionReconfigurationTimeout__(self):
+        if self.attemptNo < self.maxRrcConnectionReconfigurationAttempts:
+            self.__sendRrcConnectionReconfiguration__()
+        else:
+            self.__notifyProcedureCompletion__(self.ErrorNoRrcConnectionReconfigurationCompleteMessage, self.ueAddress)
+    
+    def returnRrcTransactionIdentifier(self):
+        return self.rrcTransactionIdentifier
+    
+class RrcConnectionReconfigurationProcedureHandler(object):
+
+    def __init__(self, maxRrcConnectionReconfigurationAttempts, rrcConnectionReconfigurationTimeout, ioService, onNewRrcConnectionReconfigurationCallback):
+        self.maxRrcConnectionSetupAttempts = maxRrcConnectionReconfigurationAttempts;
+        self.rrcConnectionReconfigurationTimeout = rrcConnectionReconfigurationTimeout
+        self.ioService = ioService
+        self.newRrcConnectionReconfigurationCallback = onNewRrcConnectionReconfigurationCallback
+        self.ongoingRrcReconfigurationProcedures = {}
+        self.rrcTransactionIdToCrntiMapping = {}
+        self.rrcTransIdIndex = 0
+        self.cRntiIndex = 0
+        self.kpis = Counter(
+            numRrcConnectionReconfigurationReceived=0,
+            numRrcConnectionReconfigurationCompletesReceived=0,
+            numRrcConnectionReconfigurationFailures=0,
+            numRrcConnectionReconfigurationSuccesses=0
+        )
+
+    def __procedureReconfigurationCompleteCallback__(self, result, address, cRnti, rrcTransactionIdentifier, args=None):
+        kpiName = (result == RrcConnectionReconfigurationProcedure.Success and
+            "numRrcConnectionReconfigurationSuccesses" or "numRrcConnectionReconfigurationFailures")
+        self.kpis[kpiName] += 1
+        if result == RrcConnectionReconfigurationProcedure.Success:
+            self.newRrcConnectionReconfigurationCallback(address, cRnti, args)
+        del self.rrcTransactionIdToCrntiMapping[rrcTransactionIdentifier]
+        del self.ongoingRrcReconfigurationProcedures[cRnti]
+
+    def handleIncomingMessage(self, source, interface, channelInfo, message):
+        if message["messageType"] == "rrcConnectionReconfigurationComplete":
+            self.kpis["numRrcConnectionSetupCompletesReceived"] += 1
+            rrcTransactionIdentifier = message["rrcTransactionIdentifier"]
+            if rrcTransactionIdentifier in self.rrcTransactionIdToCrntiMapping:
+                cRnti = self.rrcTransactionIdToCrntiMapping[rrcTransactionIdentifier]
+                self.ongoingRrcReconfigurationProcedures[cRnti].handleRrcReconfigurationMessage(source, interface,
+                    channelInfo, message)
+            else:
+                print "Transaction Identifier {} not provided by this eNB. Message ignored:{}".format(rrcTransactionIdentifier, message)
+            return True
+        return False
+
+        
 class RrcConnectionEstablishmentProcedure(object):
 
     Success, ErrorNoRrcConnectionCompleteMessage = range(2)
 
-    def __init__(self, maxRrcConnectionSetupAttempts, rrcConnectionSetupTimeout, 
+    def __init__(self, maxRrcConnectionSetupAttempts, rrcConnectionSetupTimeout,
             ioService, procedureCompleteCallback):
-        self.maxRrcConnectionSetupAttempts = maxRrcConnectionSetupAttempts # not defined in standards
+        self.maxRrcConnectionSetupAttempts = maxRrcConnectionSetupAttempts  # not defined in standards
         self.rrcConnectionSetupTimeout = rrcConnectionSetupTimeout
         self.procedureCompleteCallback = procedureCompleteCallback
         self.ioService = ioService
@@ -84,11 +183,11 @@ class RrcConnectionEstablishmentProcedureHandler(object):
         self.rrcTransIdIndex = 0
         self.cRntiIndex = 0
         self.kpis = Counter(
-            numRandomAccessRequestsReceived = 0,
-            numRrcConnectionRequestsReceived = 0,
-            numRrcConnectionSetupCompletesReceived = 0,
-            numRrcConnectionEstablishmentFailures = 0,
-            numRrcConnectionEstablishmentSuccesses = 0
+            numRandomAccessRequestsReceived=0,
+            numRrcConnectionRequestsReceived=0,
+            numRrcConnectionSetupCompletesReceived=0,
+            numRrcConnectionEstablishmentFailures=0,
+            numRrcConnectionEstablishmentSuccesses=0
         )
 
     def __sendRandomAccessResponse__(self, destination, raRnti, rapid,
@@ -99,11 +198,11 @@ class RrcConnectionEstablishmentProcedureHandler(object):
     def __generateTemporaryCrnti__(self):
         # need to update this routine to select appropriate cRnti
         self.cRntiIndex += 1
-        return ((self.cRntiIndex - 1)  % 256)
+        return ((self.cRntiIndex - 1) % 256)
 
     def __generateUplinkGrant__(self):
         # need to create a routine to generate uplink grant
-        return random.randint(100,400)
+        return random.randint(100, 400)
 
     def __generateRrcTransactionIdentifier__(self):
         # need to create a routine to generate transaction id

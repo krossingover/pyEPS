@@ -3,11 +3,53 @@ import random
 from eps.messages.rrc import rrcConnectionRequest, rrcConnectionSetupComplete
 from eps.messages.mac import randomAccessPreamble
 
+class RrcConnectionReconfigurationProcedure(object):
+
+    Success, ErrorNoContentionResolutionIdentity, ErrorNoRrcConnectionReconfiguration = range(3)
+    
+    def __init__(self, enbAddress, ioService, procedureReconfigurationCompleteCallback,
+                 rrcReconfigurationInputParameters):
+        self.rrcReconfigurationInputParameters = rrcReconfigurationInputParameters
+        self.enbAddress = enbAddress
+        self.ioService = ioService
+        self.procedureReconfigurationCompleteCallback = procedureReconfigurationCompleteCallback
+        self.procedureReconfigurationCompleteCallbackExecuted = False
+        self.attemptNo = 0
+
+    def execute(self):
+        
+        requiredInputParameters = ("ueIdentityType", "ueIdentityValue", "rrcReconfigurationCause",
+                                   "selectedPlmnIdentity", "initialNasMessage")
+        missingInputParameters = set(requiredInputParameters) - set(self.rrcReconfigurationInputParameters)
+        if missingInputParameters:
+            raise Exception("Missing RRC Reconfiguration input parameters: {}".format(missingInputParameters))
+        self.ioService.addIncomingMessageCallback(self.__incomingMessageCallback__)
+
+    def terminate(self):
+        self.ioService.removeIncomingMessageCallback(self.__incomingMessageCallback__)
+    
+    def __notifyProcedureCompletion__(self, result):
+        self.procedureReconfigurationCompleteCallback(result)
+
+    def __incomingConfigurationMessageCallback__(self, source, interface, channelInfo, message):
+       
+        if message["messageType"] == "rrcConnectionSetup":
+            if channelInfo["puschScramblingInput"] == self.temporaryCrnti:
+                self.rrcTransactionIdentifier = message["rrcTransactionIdentifier"]
+                self.__sendRrcConnectionConfigurationComplete__()
+                if not self.procedureCompleteCallbackExecuted:
+                    self.__notifyProcedureCompletion__(self.Success)
+                    self.procedureCompleteCallbackExecuted = True
+    
+    def __sendRrcConnectionSetupComplete__(self):
+        self.ioService.sendMessage(self.enbAddress, *rrcConnectionSetupComplete(self.rrcTransactionIdentifier,
+            self.rrcConfigurationInputParameters["selectedPlmnIdentity"], self.rrcEstablishmentInputParameters["initialNasMessage"]))
+
 class RrcConnectionEstablishmentProcedure(object):
 
     Success, ErrorNoRandomAccessResponse, ErrorNoContentionResolutionIdentity, ErrorNoRrcConnectionSetup = range(4)
     
-    def __init__(self, procedureParameters, enbAddress, ioService, procedureCompleteCallback, 
+    def __init__(self, procedureParameters, enbAddress, ioService, procedureCompleteCallback,
                  rrcEstablishmentInputParameters):
         self.procedureParameters = procedureParameters
         self.rrcEstablishmentInputParameters = rrcEstablishmentInputParameters
@@ -28,7 +70,7 @@ class RrcConnectionEstablishmentProcedure(object):
         missingProcedureParameters = filter(lambda p: p not in self.procedureParameters, requiredProcedureParameters)
         if missingProcedureParameters:
             raise Exception("Missing RRC Connection Setup Procedure parameters: {}".format(missingProcedureParameters))
-        requiredInputParameters = ("ueIdentityType", "ueIdentityValue", "rrcEstablishmentCause", 
+        requiredInputParameters = ("ueIdentityType", "ueIdentityValue", "rrcEstablishmentCause",
                                    "selectedPlmnIdentity", "initialNasMessage")
         missingInputParameters = set(requiredInputParameters) - set(self.rrcEstablishmentInputParameters)
         if missingInputParameters:
@@ -40,10 +82,10 @@ class RrcConnectionEstablishmentProcedure(object):
         self.ioService.removeIncomingMessageCallback(self.__incomingMessageCallback__)
 
     def __generateRarnti__(self):
-        return random.randint(0,10)
+        return random.randint(0, 10)
     
     def __generateRapid__(self):
-        return random.randint(0,63)
+        return random.randint(0, 63)
     
     def __notifyProcedureCompletion__(self, result):
         self.procedureCompleteCallback(result)
@@ -91,7 +133,7 @@ class RrcConnectionEstablishmentProcedure(object):
                                                                self.rrcEstablishmentInputParameters["ueIdentityValue"],
                                                                self.rrcEstablishmentInputParameters["rrcEstablishmentCause"])
         self.ioService.sendMessage(self.enbAddress, interface, channelInfo, message)
-        self.rrcConnectionRequestMessage = message # need to store this to compre with macCRI
+        self.rrcConnectionRequestMessage = message  # need to store this to compre with macCRI
         self.waitForRrcConnectionSetupTimerT300 = self.ioService.createTimer(
             self.procedureParameters["rrcConnectionSetupTimeoutT300"], self.__onRrcConnectionSetupTimeout__)
         self.waitForRrcConnectionSetupTimerT300.start()
@@ -108,5 +150,5 @@ class RrcConnectionEstablishmentProcedure(object):
         self.__notifyProcedureCompletion__(self.ErrorNoContentionResolutionIdentity)
     
     def __sendRrcConnectionSetupComplete__(self):
-        self.ioService.sendMessage(self.enbAddress, *rrcConnectionSetupComplete(self.rrcTransactionIdentifier, 
+        self.ioService.sendMessage(self.enbAddress, *rrcConnectionSetupComplete(self.rrcTransactionIdentifier,
             self.rrcEstablishmentInputParameters["selectedPlmnIdentity"], self.rrcEstablishmentInputParameters["initialNasMessage"]))
